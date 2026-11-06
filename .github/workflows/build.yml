@@ -1,0 +1,52 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $env:CGO_ENABLED = '0'
+          go build -trimpath -ldflags "-s -w" -o mira-mcp.exe .
+          $size = (Get-Item .\mira-mcp.exe).Length
+          "exe 体积: {0:N2} MB ({1} bytes)" -f ($size / 1MB), $size | Tee-Object -FilePath size.txt
+          Get-Content size.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mira-mcp-windows-amd64
+          path: mira-mcp.exe
+          if-no-files-found: error
+
+      - name: Publish release asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view mira-latest 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create mira-latest --title "最新构建" --notes "由 CI 自动构建，提交 ${{ github.sha }}。" --prerelease
+          }
+          gh release upload mira-latest mira-mcp.exe --clobber
