@@ -12,15 +12,14 @@ import (
 )
 
 const (
-	// CloudBaseURL 是 Mira Cloud 的公开端点。
-	// 取值依据：移动端 relay 规范中的默认 relay 端点，以及 uichat-mira-relay README
-	// 声明的 hosted endpoint。若云端改址，这里必须同步更新。
-	CloudBaseURL = "https://relay.tomz.io"
+	// CloudBaseURL 是 Mira Cloud Auth 的公开端点。
+	// 依据：cloud-auth 仓库 docs/deployment.md 的拓扑说明与线上 /health 实测。
+	CloudBaseURL = "https://cloud-auth.tomzlab.cn"
 
-	// LoginPath 与移动端 desktopMiraHost 使用的登录契约一致：POST {username,password}。
-	LoginPath = "/login"
+	// LoginPath 对应 cloud-auth OPS-006 的根登录契约。
+	LoginPath = "/v1/auth/login"
 
-	Version     = "0.1.0"
+	Version     = "0.2.0"
 	DefaultPort = 7788
 )
 
@@ -38,18 +37,18 @@ type LoginError struct {
 
 func (e *LoginError) Error() string { return e.Message }
 
+// loginPayload 对应 POST /v1/auth/login 的成功响应。
+// 约定见 cloud-auth docs/auth-v0.md：sessionToken + account{id,username} + expiresAt。
 type loginPayload struct {
-	Token    string     `json:"token"`
-	Username string     `json:"username"`
-	Data     *loginData `json:"data"`
+	SessionToken string `json:"sessionToken"`
+	Account      *struct {
+		ID       string `json:"id"`
+		Username string `json:"username"`
+	} `json:"account"`
+	ExpiresAt string `json:"expiresAt"`
 }
 
-type loginData struct {
-	Token    string `json:"token"`
-	Username string `json:"username"`
-}
-
-// Login 使用云端既有契约换取访问令牌。
+// Login 使用云端既有契约换取 Cloud Session。
 func Login(ctx context.Context, baseURL, username, password string) (*LoginResult, error) {
 	username = strings.TrimSpace(username)
 	if username == "" || password == "" {
@@ -69,7 +68,7 @@ func Login(ctx context.Context, baseURL, username, password string) (*LoginResul
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, &LoginError{Message: "无法连接云端 " + endpoint + "：" + err.Error()}
@@ -92,32 +91,34 @@ func Login(ctx context.Context, baseURL, username, password string) (*LoginResul
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, &LoginError{Status: resp.StatusCode, Message: "登录响应不是合法 JSON：" + err.Error()}
 	}
-
-	token, name := payload.Token, payload.Username
-	if token == "" && payload.Data != nil {
-		token, name = payload.Data.Token, payload.Data.Username
-	}
-	if token == "" {
-		return nil, &LoginError{Status: resp.StatusCode, Message: "登录响应缺少 token 字段"}
-	}
-	if name == "" {
-		name = username
+	if payload.SessionToken == "" {
+		return nil, &LoginError{Status: resp.StatusCode, Message: "登录响应缺少 sessionToken 字段"}
 	}
 
-	return &LoginResult{Token: token, Username: name}, nil
+	name := username
+	if payload.Account != nil && payload.Account.Username != "" {
+		name = payload.Account.Username
+	}
+
+	return &LoginResult{Token: payload.SessionToken, Username: name}, nil
 }
 
-// serverMessage 尽量把服务端的错误信息原样交给用户，找不到就截断原始响应。
+// serverMessage 把服务端错误码/信息原样交给用户，找不到就截断原始响应。
 func serverMessage(raw []byte) string {
 	var generic struct {
+		Code    string `json:"code"`
 		Message string `json:"message"`
 		Error   string `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &generic); err == nil {
-		if generic.Message != "" {
+		switch {
+		case generic.Code != "" && generic.Message != "":
+			return generic.Code + "：" + generic.Message
+		case generic.Message != "":
 			return generic.Message
-		}
-		if generic.Error != "" {
+		case generic.Code != "":
+			return generic.Code
+		case generic.Error != "":
 			return generic.Error
 		}
 	}

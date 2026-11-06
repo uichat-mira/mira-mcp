@@ -4,15 +4,16 @@ Mira 在 Windows 上的本机 MCP 端点。用一个中文登录窗完成 Mira C
 
 ## 状态
 
-- 登录：接入云端既有 `POST /login` 契约（`{username,password}` → `{token,username}`），失败原因原样显示，不做静默降级。
+- 登录：接入 `cloud-auth` 的真实契约 `POST /v1/auth/login`（`{username,password}` → `{sessionToken,account{id,username},expiresAt}`），错误码与状态码原样显示，不做静默降级。
+- 云端地址：`https://cloud-auth.tomzlab.cn`（依据 `cloud-auth` 的 `docs/deployment.md` 拓扑与线上 `/health` 实测 `{"status":"ok","service":"mira-cloud-auth"}`）。
 - 凭据：DPAPI 加密后写入 `%APPDATA%\MiraMCP\credentials.bin`，不保存明文 token。
-- 本机端点：`http://127.0.0.1:7788/mcp`，仅监听回环地址，要求 `Authorization: Bearer <本机口令>`。
+- 本机端点：`http://127.0.0.1:7788/mcp`，仅监听回环地址，要求 `Authorization: Bearer <本机口令>`；口令在登录成功后显示在窗口状态区。
 - 窗口关闭后收进托盘，进程继续提供端点；托盘菜单可重新显示窗口或退出。
 
 ## 未实现（明确缺口）
 
-1. **云端中继注册**：移动端经 Relay 找到本机所需的 `relayId` / token 由 Desktop 侧配对材料生成，本服务尚未接入该注册流程。当前移动端只能在同机或可达 `127.0.0.1:7788` 时直连。
-2. **云端地址来源**：`CloudBaseURL` 取 `https://relay.tomz.io`（依据移动端 relay 规范与 `uichat-mira-relay` README 声明的 hosted endpoint）。`cloud-auth` 的公开登录域名尚未在任一仓库中确定；若该端点不提供 `/login`，界面会直接显示 HTTP 状态码，不会被吞掉。
+1. **云端中继注册**：移动端经 Relay 找到本机所需的 `relayId` / token 由 Desktop 侧配对材料生成，本服务尚未接入该注册流程。当前移动端只能直连可达的 `127.0.0.1:7788`。
+2. **设备注册**：`cloud-auth` 提供 `POST /v1/devices` 供客户端登记 `installationId` 与 `platform`，本版未接入，登录时不携带 `device` 上下文。
 3. **工具面**：只暴露 `mira_ping` 与 `mira_whoami`，用于验证链路。
 
 ## 构建
