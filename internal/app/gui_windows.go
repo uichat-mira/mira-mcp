@@ -222,7 +222,7 @@ func (g *gui) createWindow() error {
 		uintptr(unsafe.Pointer(utf16ptr("Mira 移动端连接"))),
 		wsOverlappedWindow,
 		240, 180,
-		440, 320,
+		440, 340,
 		0, 0, hInstance, 0,
 	)
 	if hwnd == 0 {
@@ -238,7 +238,7 @@ func (g *gui) createWindow() error {
 		wsChild|wsVisible|wsTabStop|esAutoHScroll|esPassword)
 	g.hBtn = g.control("BUTTON", "登录并连接", ctrlLogin, 24, 148, 376, 34,
 		wsChild|wsVisible|wsTabStop)
-	g.hStatus = g.control("STATIC", "未连接", 0, 24, 196, 376, 76, wsChild|wsVisible)
+	g.hStatus = g.control("STATIC", "未连接", 0, 24, 196, 376, 96, wsChild|wsVisible)
 
 	procShowWindow.Call(hwnd, swShow)
 	procUpdateWindow.Call(hwnd)
@@ -276,8 +276,8 @@ func (g *gui) restore() {
 	if cred == nil {
 		return
 	}
-	g.setStatus(connectedText(*cred) + "\n本机端点：" + MCPEndpoint())
-	g.startServer(cred)
+	secret := g.startServer(cred)
+	g.setStatus(connectedText(*cred) + "\n本机端点：" + MCPEndpoint() + "\n本机口令：" + secret)
 }
 
 func (g *gui) login() {
@@ -305,35 +305,35 @@ func (g *gui) login() {
 			return
 		}
 
-		g.startServer(&cred)
-		g.setNote(connectedText(cred) + "\n本机端点：" + MCPEndpoint())
+		secret := g.startServer(&cred)
+		g.setNote(connectedText(cred) + "\n本机端点：" + MCPEndpoint() + "\n本机口令：" + secret)
 		procPostMessage.Call(g.hwnd, msgLoginDone, 0, 0)
 	}()
 }
 
-func (g *gui) startServer(cred *Credential) {
+// startServer 启动本机端点并返回移动端需要的访问口令。
+func (g *gui) startServer(cred *Credential) string {
 	g.mu.Lock()
 	if g.srv != nil {
 		g.srv.SetUser(cred.Username)
 		g.mu.Unlock()
-		return
+		return "（已在运行）"
 	}
 	g.mu.Unlock()
 
 	secret, err := NewLocalSecret()
 	if err != nil {
-		g.setStatus("无法生成本机访问口令：" + err.Error())
-		return
+		return "生成失败：" + err.Error()
 	}
 	srv := NewServer(secret, cred.Username)
 	if err := srv.Start(); err != nil {
-		g.setStatus(err.Error())
-		return
+		return "启动失败：" + err.Error()
 	}
 
 	g.mu.Lock()
 	g.srv = srv
 	g.mu.Unlock()
+	return secret
 }
 
 func (g *gui) setNote(text string) {
