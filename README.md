@@ -4,18 +4,33 @@ Mira 在 Windows 上的本机 MCP 端点。用一个中文登录窗完成 Mira C
 
 ## 使用
 
-双击 `mira-mcp.exe` 即可，不会出现黑色控制台窗口。
+双击 `mira-mcp.exe` 即可，不会出现黑色控制台窗口。窗口标题会显示版本号，便于确认跑的是哪个构建。
 
 - 登录：`POST https://cloud-auth.tomzlab.cn/v1/auth/login`，契约见 `cloud-auth` 的 `docs/auth-v0.md`。错误码与状态码原样显示，不做静默降级。
 - 凭据：DPAPI 加密后写入 `%APPDATA%\MiraMCP\credentials.bin`，不保存明文 token；下次启动自动复用。
 - 本机端点：`http://127.0.0.1:7788/mcp`，仅监听回环地址，要求 `Authorization: Bearer <本机口令>`；口令在登录成功后显示在窗口状态区。
 - 关闭窗口收进托盘，进程继续提供端点；托盘菜单可重新显示窗口或退出。
+- 单实例：重复双击只会提示「已经在运行」，不会启动第二个进程去争抢端口。
+
+## 排查
+
+诊断日志：`%APPDATA%\MiraMCP\mira-mcp.log`。只记录状态与错误，不记录密码或 token。
+
+日志里的 `heartbeat` 每 30 秒一行，可用来判断消息循环是否还在运行；`message loop exited` 表示窗口已正常退出。
 
 ## 未实现（明确缺口）
 
-1. **跨设备发现**：本机端点目前只能由同机或可达 `127.0.0.1:7788` 的客户端访问。云端设备发现/中继协议尚未接入，移动端还无法远程找到这台机器。
+1. **跨设备发现**：本机端点目前只能由同机或可达 `127.0.0.1:7788` 的客户端访问。云端设备发现协议尚未接入，移动端还无法远程找到这台机器。
 2. **设备注册**：`cloud-auth` 提供 `POST /v1/devices` 供客户端登记 `installationId` 与 `platform`，本版登录不携带 `device` 上下文。
 3. **工具面**：只暴露 `mira_ping` 与 `mira_whoami`，用于验证链路。
+
+## UI 线程模型
+
+Win32 窗口与消息队列绑定在创建它的 OS 线程上，因此：
+
+- `Run()` 用 `runtime.LockOSThread()` 锁定 UI 线程；
+- 消息循环用 `PeekMessage` 轮询而非阻塞式 `GetMessage`，让线程周期性回到 Go 运行时，避免被 Windows 判定为「未响应」；
+- 任何后台 goroutine 都不得直接调用 `SetWindowTextW` 这类跨线程 `SendMessage`，必须 `PostMessage` 交回 UI 线程处理。
 
 ## 构建
 
