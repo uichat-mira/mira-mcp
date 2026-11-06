@@ -196,7 +196,7 @@ func Run() error {
 		return err
 	}
 
-	// 磁盘与加密调用可能很慢（漫游配置、DPAPI 需要联系域控），
+	// 磁盘与 DPAPI 调用可能很慢（漫游配置、需联系域控），
 	// 放到独立 goroutine，避免窗口一出现就卡住消息泵。
 	go g.restore()
 
@@ -275,10 +275,12 @@ func (g *gui) createWindow() error {
 		return fmt.Errorf("无法注册窗口类：%v", err)
 	}
 
+	// 标题带上版本号，方便确认到底跑的是哪个构建。
+	title := utf16ptr("Mira 移动端连接 v" + Version)
 	hwnd, _, err := procCreateWindowEx.Call(
 		0,
 		uintptr(unsafe.Pointer(className)),
-		uintptr(unsafe.Pointer(utf16ptr("Mira 移动端连接"))),
+		uintptr(unsafe.Pointer(title)),
 		wsOverlappedWindow,
 		uintptr(g.sc(240)), uintptr(g.sc(180)),
 		uintptr(g.sc(456)), uintptr(g.sc(400)),
@@ -331,11 +333,16 @@ func (g *gui) control(class, text string, id, x, y, w, h int, style uintptr) uin
 }
 
 // restore 复用已保存的凭据，避免每次开机都要重新输入密码。
+//
+// 该方法运行在独立 goroutine 上，绝不能直接调用 setStatus：
+// SetWindowTextW 本质是跨线程 SendMessage，会阻塞到 UI 线程处理为止。
+// 这里只准备文本，再通过 PostMessage 交回 UI 线程落地。
 func (g *gui) restore() {
 	cred, err := g.store.Load()
 	if err != nil {
 		logf("load credential failed: %v", err)
-		g.setStatus("读取已保存登录信息失败：" + err.Error())
+		g.setNote("读取已保存登录信息失败：" + err.Error())
+		procPostMessage.Call(g.hwnd, msgLoginDone, 0, 0)
 		return
 	}
 	if cred == nil {
@@ -344,7 +351,8 @@ func (g *gui) restore() {
 	}
 	logf("restored credential for %s", cred.Username)
 	secret := g.startServer(cred)
-	g.setStatus(connectedText(*cred) + "\n本机端点：" + MCPEndpoint() + "\n本机口令：" + secret)
+	g.setNote(connectedText(*cred) + "\n本机端点：" + MCPEndpoint() + "\n本机口令：" + secret)
+	procPostMessage.Call(g.hwnd, msgLoginDone, 0, 0)
 }
 
 func (g *gui) login() {
@@ -500,7 +508,7 @@ func (g *gui) messageLoop() {
 			continue
 		}
 
-		if time.Since(lastBeat) >= 10*time.Second {
+		if time.Since(lastBeat) >= 30*time.Second {
 			logf("heartbeat")
 			lastBeat = time.Now()
 		}

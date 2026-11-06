@@ -19,7 +19,7 @@ const (
 	// LoginPath 对应 cloud-auth OPS-006 的根登录契约。
 	LoginPath = "/v1/auth/login"
 
-	Version     = "0.2.0"
+	Version     = "0.3.0"
 	DefaultPort = 7788
 )
 
