@@ -28,8 +28,9 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
+          # CGO 关闭 + 裁剪调试信息 + windowsgui 子系统（不弹黑色控制台窗口）。
           $env:CGO_ENABLED = '0'
-          go build -trimpath -ldflags "-s -w" -o mira-mcp.exe .
+          go build -trimpath -ldflags "-H windowsgui -s -w" -o mira-mcp.exe .
           $size = (Get-Item .\mira-mcp.exe).Length
           "exe 体积: {0:N2} MB ({1} bytes)" -f ($size / 1MB), $size | Tee-Object -FilePath size.txt
           Get-Content size.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
