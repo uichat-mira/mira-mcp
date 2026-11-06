@@ -124,7 +124,8 @@ func serverMessage(raw []byte) string {
 	}
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
-		return "服务端未返回内容，请确认云端地址是否正确"
+		// cloud-auth 对无效凭据返回空的 401 正文，这里按契约还原为用户可读的提示。
+		return "账号或密码错误（或该账号未被允许使用）"
 	}
 	return truncate(trimmed, 200)
 }
