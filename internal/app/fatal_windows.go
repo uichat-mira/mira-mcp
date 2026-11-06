@@ -2,10 +2,7 @@
 
 package app
 
-import (
-	"syscall"
-	"unsafe"
-)
+import "unsafe"
 
 var procMessageBox = user32.NewProc("MessageBoxW")
 
