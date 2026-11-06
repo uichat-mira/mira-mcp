@@ -129,8 +129,10 @@ func serverMessage(raw []byte) string {
 }
 
 func truncate(s string, limit int) string {
-	if len(s) <= limit {
+	// 按字符而非字节截断，避免把中文切成非法 UTF-8。
+	runes := []rune(s)
+	if len(runes) <= limit {
 		return s
 	}
-	return s[:limit] + "…"
+	return string(runes[:limit]) + "…"
 }
