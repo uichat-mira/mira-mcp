@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -17,33 +18,37 @@ var (
 	shell32  = syscall.NewLazyDLL("shell32.dll")
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 
-	procRegisterClassEx  = user32.NewProc("RegisterClassExW")
-	procCreateWindowEx   = user32.NewProc("CreateWindowExW")
-	procDefWindowProc    = user32.NewProc("DefWindowProcW")
-	procShowWindow       = user32.NewProc("ShowWindow")
-	procUpdateWindow     = user32.NewProc("UpdateWindow")
-	procGetMessage       = user32.NewProc("GetMessageW")
-	procTranslateMessage = user32.NewProc("TranslateMessage")
-	procDispatchMessage  = user32.NewProc("DispatchMessageW")
-	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
-	procDestroyWindow    = user32.NewProc("DestroyWindow")
-	procSendMessage      = user32.NewProc("SendMessageW")
-	procGetWindowText    = user32.NewProc("GetWindowTextW")
-	procGetWindowTextLen = user32.NewProc("GetWindowTextLengthW")
-	procSetWindowText    = user32.NewProc("SetWindowTextW")
-	procEnableWindow     = user32.NewProc("EnableWindow")
-	procPostMessage      = user32.NewProc("PostMessageW")
-	procSetFocus         = user32.NewProc("SetFocus")
-	procCreatePopupMenu  = user32.NewProc("CreatePopupMenu")
-	procAppendMenu       = user32.NewProc("AppendMenuW")
-	procTrackPopupMenu   = user32.NewProc("TrackPopupMenu")
-	procGetCursorPos     = user32.NewProc("GetCursorPos")
-	procSetForeground    = user32.NewProc("SetForegroundWindow")
-	procLoadCursor       = user32.NewProc("LoadCursorW")
-	procLoadIcon         = user32.NewProc("LoadIconW")
-	procGetModuleHandle  = kernel32.NewProc("GetModuleHandleW")
-	procCreateFont       = gdi32.NewProc("CreateFontW")
-	procShellNotifyIcon  = shell32.NewProc("Shell_NotifyIconW")
+	procRegisterClassEx    = user32.NewProc("RegisterClassExW")
+	procCreateWindowEx     = user32.NewProc("CreateWindowExW")
+	procDefWindowProc      = user32.NewProc("DefWindowProcW")
+	procShowWindow         = user32.NewProc("ShowWindow")
+	procUpdateWindow       = user32.NewProc("UpdateWindow")
+	procPeekMessage        = user32.NewProc("PeekMessageW")
+	procTranslateMessage   = user32.NewProc("TranslateMessage")
+	procDispatchMessage    = user32.NewProc("DispatchMessageW")
+	procPostQuitMessage    = user32.NewProc("PostQuitMessage")
+	procDestroyWindow      = user32.NewProc("DestroyWindow")
+	procSendMessage        = user32.NewProc("SendMessageW")
+	procGetWindowText      = user32.NewProc("GetWindowTextW")
+	procGetWindowTextLen   = user32.NewProc("GetWindowTextLengthW")
+	procSetWindowText      = user32.NewProc("SetWindowTextW")
+	procEnableWindow       = user32.NewProc("EnableWindow")
+	procPostMessage        = user32.NewProc("PostMessageW")
+	procSetFocus           = user32.NewProc("SetFocus")
+	procCreatePopupMenu    = user32.NewProc("CreatePopupMenu")
+	procAppendMenu         = user32.NewProc("AppendMenuW")
+	procTrackPopupMenu     = user32.NewProc("TrackPopupMenu")
+	procGetCursorPos       = user32.NewProc("GetCursorPos")
+	procSetForeground      = user32.NewProc("SetForegroundWindow")
+	procLoadCursor         = user32.NewProc("LoadCursorW")
+	procLoadIcon           = user32.NewProc("LoadIconW")
+	procSetProcessDPIAware = user32.NewProc("SetProcessDPIAware")
+	procGetDpiForSystem    = user32.NewProc("GetDpiForSystem")
+	procMessageBox         = user32.NewProc("MessageBoxW")
+	procGetModuleHandle    = kernel32.NewProc("GetModuleHandleW")
+	procCreateMutex        = kernel32.NewProc("CreateMutexW")
+	procCreateFont         = gdi32.NewProc("CreateFontW")
+	procShellNotifyIcon    = shell32.NewProc("Shell_NotifyIconW")
 )
 
 const (
@@ -58,9 +63,12 @@ const (
 	wmClose     = 0x0010
 	wmDestroy   = 0x0002
 	wmSetFont   = 0x0030
+	wmQuit      = 0x0012
 	wmApp       = 0x8000
 	wmLButtonUp = 0x0202
 	wmRButtonUp = 0x0205
+
+	pmRemove = 0x0001
 
 	nifMessage = 0x0001
 	nifIcon    = 0x0002
@@ -79,6 +87,9 @@ const (
 	idiArrow       = 32512
 	swHide         = 0
 	swShow         = 5
+	swRestore      = 9
+
+	errorAlreadyExists = 183
 )
 
 const (
@@ -141,6 +152,7 @@ type gui struct {
 	hStatus uintptr
 	hFont   uintptr
 	icon    uintptr
+	scale   float64
 
 	store *Store
 
@@ -156,20 +168,41 @@ var (
 
 // Run 显示中文登录窗，并在登录成功后启动本机 MCP 端点。
 func Run() error {
-	g := &gui{}
-	activeGUI = g
+	// Win32 窗口与消息队列绑定在创建它的 OS 线程上。
+	// 不锁定线程时 Go 调度器可能把消息循环迁移到别的线程，
+	// 拥有窗口的线程不再泵消息，Windows 就会把窗口标记为「未响应」。
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	resetLog()
+	logStartup()
+
+	if !acquireSingleInstance() {
+		logf("another instance already running")
+		showInfo("Mira 移动端连接已经在运行。\n\n请在任务栏或系统托盘中找到它；窗口被关闭后双击托盘图标即可重新打开。")
+		return nil
+	}
+
+	g := &gui{scale: detectScale()}
 
 	store, err := NewStore()
 	if err != nil {
 		return fmt.Errorf("无法初始化凭据存储：%w", err)
 	}
 	g.store = store
+	activeGUI = g
 
 	if err := g.createWindow(); err != nil {
 		return err
 	}
-	g.restore()
+
+	// 磁盘与加密调用可能很慢（漫游配置、DPAPI 需要联系域控），
+	// 放到独立 goroutine，避免窗口一出现就卡住消息泵。
+	go g.restore()
+
+	logf("entering message loop")
 	g.messageLoop()
+	logf("message loop exited")
 
 	g.mu.Lock()
 	srv := g.srv
@@ -180,11 +213,37 @@ func Run() error {
 	return nil
 }
 
+// acquireSingleInstance 用命名互斥量保证只有一个实例，避免多个窗口争抢同一端口。
+func acquireSingleInstance() bool {
+	_, _, err := procCreateMutex.Call(0, 0, uintptr(unsafe.Pointer(utf16ptr(`Local\MiraMCP.SingleInstance`))))
+	errno, ok := err.(syscall.Errno)
+	if ok && errno == errorAlreadyExists {
+		return false
+	}
+	return true
+}
+
+// detectScale 返回系统 DPI 相对 96 的缩放比，用于按物理像素还原布局。
+func detectScale() float64 {
+	procSetProcessDPIAware.Call()
+	// GetDpiForSystem 在 Windows 10 1607 之后才存在，老系统上 Find 会返回错误。
+	if err := procGetDpiForSystem.Find(); err == nil {
+		if dpi, _, _ := procGetDpiForSystem.Call(); dpi >= 96 && dpi <= 480 {
+			return float64(dpi) / 96
+		}
+	}
+	return 1
+}
+
+func (g *gui) sc(v int) int {
+	return int(float64(v)*g.scale + 0.5)
+}
+
 func (g *gui) createWindow() error {
 	hInstance, _, _ := procGetModuleHandle.Call(0)
 
-	// CreateFontW 的高度是有符号值，必须经由变量转换，否则常量 -14 转 uintptr 会溢出。
-	height := int32(-14)
+	// CreateFontW 的高度是有符号值，必须经由变量转换，否则常量转 uintptr 会溢出。
+	height := int32(-g.sc(14))
 	g.hFont, _, _ = procCreateFont.Call(
 		uintptr(height), 0, 0, 0, fwNormal, 0, 0, 0,
 		defaultCharset, 0, 0, 0, 0,
@@ -221,8 +280,8 @@ func (g *gui) createWindow() error {
 		uintptr(unsafe.Pointer(className)),
 		uintptr(unsafe.Pointer(utf16ptr("Mira 移动端连接"))),
 		wsOverlappedWindow,
-		240, 180,
-		440, 340,
+		uintptr(g.sc(240)), uintptr(g.sc(180)),
+		uintptr(g.sc(456)), uintptr(g.sc(400)),
 		0, 0, hInstance, 0,
 	)
 	if hwnd == 0 {
@@ -230,24 +289,29 @@ func (g *gui) createWindow() error {
 	}
 	g.hwnd = hwnd
 
-	g.label("账号", 24, 20)
-	g.hUser = g.control("EDIT", "", 0, 24, 44, 376, 28,
+	m := g.sc(24)
+	w := g.sc(408)
+
+	g.label("账号", m, g.sc(18), w)
+	g.hUser = g.control("EDIT", "", 0, m, g.sc(42), w, g.sc(30),
 		wsChild|wsVisible|wsTabStop|esAutoHScroll)
-	g.label("密码", 24, 80)
-	g.hPass = g.control("EDIT", "", 0, 24, 104, 376, 28,
+	g.label("密码", m, g.sc(80), w)
+	g.hPass = g.control("EDIT", "", 0, m, g.sc(104), w, g.sc(30),
 		wsChild|wsVisible|wsTabStop|esAutoHScroll|esPassword)
-	g.hBtn = g.control("BUTTON", "登录并连接", ctrlLogin, 24, 148, 376, 34,
+	g.hBtn = g.control("BUTTON", "登录并连接", ctrlLogin, m, g.sc(148), w, g.sc(36),
 		wsChild|wsVisible|wsTabStop)
-	g.hStatus = g.control("STATIC", "未连接", 0, 24, 196, 376, 96, wsChild|wsVisible)
+	g.hStatus = g.control("STATIC", "未连接", 0, m, g.sc(198), w, g.sc(132),
+		wsChild|wsVisible)
 
 	procShowWindow.Call(hwnd, swShow)
 	procUpdateWindow.Call(hwnd)
 	procSetFocus.Call(g.hUser)
+	logf("window created: hwnd=%d scale=%.2f", hwnd, g.scale)
 	return nil
 }
 
-func (g *gui) label(text string, x, y int) {
-	g.control("STATIC", text, 0, x, y, 376, 20, wsChild|wsVisible)
+func (g *gui) label(text string, x, y, w int) {
+	g.control("STATIC", text, 0, x, y, w, g.sc(20), wsChild|wsVisible)
 }
 
 // control 创建子控件。id 作为 hMenu 传入，按钮点击时才会带出正确的控件 ID。
@@ -270,12 +334,15 @@ func (g *gui) control(class, text string, id, x, y, w, h int, style uintptr) uin
 func (g *gui) restore() {
 	cred, err := g.store.Load()
 	if err != nil {
+		logf("load credential failed: %v", err)
 		g.setStatus("读取已保存登录信息失败：" + err.Error())
 		return
 	}
 	if cred == nil {
+		logf("no saved credential")
 		return
 	}
+	logf("restored credential for %s", cred.Username)
 	secret := g.startServer(cred)
 	g.setStatus(connectedText(*cred) + "\n本机端点：" + MCPEndpoint() + "\n本机口令：" + secret)
 }
@@ -283,6 +350,7 @@ func (g *gui) restore() {
 func (g *gui) login() {
 	username := g.text(g.hUser)
 	password := g.text(g.hPass)
+	logf("login requested for %q", username)
 
 	procEnableWindow.Call(g.hBtn, 0)
 	g.setStatus("正在登录…")
@@ -293,13 +361,16 @@ func (g *gui) login() {
 
 		result, err := Login(ctx, CloudBaseURL, username, password)
 		if err != nil {
+			logf("login failed: %v", err)
 			g.setNote("登录失败：" + err.Error())
 			procPostMessage.Call(g.hwnd, msgLoginDone, 0, 0)
 			return
 		}
+		logf("login ok for %s", result.Username)
 
 		cred := Credential{Token: result.Token, Username: result.Username, Host: CloudBaseURL}
 		if err := g.store.Save(cred); err != nil {
+			logf("save credential failed: %v", err)
 			g.setNote("登录成功，但保存凭据失败：" + err.Error())
 			procPostMessage.Call(g.hwnd, msgLoginDone, 0, 0)
 			return
@@ -327,8 +398,10 @@ func (g *gui) startServer(cred *Credential) string {
 	}
 	srv := NewServer(secret, cred.Username)
 	if err := srv.Start(); err != nil {
+		logf("start server failed: %v", err)
 		return "启动失败：" + err.Error()
 	}
+	logf("local endpoint started at %s", MCPEndpoint())
 
 	g.mu.Lock()
 	g.srv = srv
@@ -397,21 +470,41 @@ func (g *gui) showTrayMenu() {
 	)
 	switch cmd {
 	case 1:
-		procShowWindow.Call(g.hwnd, swShow)
+		procShowWindow.Call(g.hwnd, swRestore)
+		procSetForeground.Call(g.hwnd)
 	case 2:
 		procDestroyWindow.Call(g.hwnd)
 	}
 }
 
+// messageLoop 用 PeekMessage 轮询而不是阻塞式 GetMessage。
+//
+// 阻塞在 GetMessage 里的线程长期停留在系统调用中，Go 运行时无法感知，
+// 一旦需要该线程（GC 停顿、调度切换），UI 线程就会长时间不泵消息，
+// Windows 随即把窗口标记为「未响应」。轮询让线程每个周期都回到 Go 侧，
+// 同时仍然及时处理输入与重绘消息。
 func (g *gui) messageLoop() {
 	var msg winMsg
+	var lastBeat time.Time
+
 	for {
-		ret, _, _ := procGetMessage.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0)
-		if int32(ret) <= 0 {
-			return
+		ret, _, _ := procPeekMessage.Call(
+			uintptr(unsafe.Pointer(&msg)), 0, 0, 0, pmRemove,
+		)
+		if ret != 0 {
+			if msg.message == wmQuit {
+				return
+			}
+			procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
+			procDispatchMessage.Call(uintptr(unsafe.Pointer(&msg)))
+			continue
 		}
-		procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
-		procDispatchMessage.Call(uintptr(unsafe.Pointer(&msg)))
+
+		if time.Since(lastBeat) >= 10*time.Second {
+			logf("heartbeat")
+			lastBeat = time.Now()
+		}
+		time.Sleep(8 * time.Millisecond)
 	}
 }
 
@@ -434,7 +527,7 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 	case msgTray:
 		switch lParam {
 		case wmLButtonUp:
-			procShowWindow.Call(hwnd, swShow)
+			procShowWindow.Call(hwnd, swRestore)
 			procSetForeground.Call(hwnd)
 		case wmRButtonUp:
 			g.showTrayMenu()
@@ -452,6 +545,12 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 
 	ret, _, _ := procDefWindowProc.Call(hwnd, msg, wParam, lParam)
 	return ret
+}
+
+func showInfo(text string) {
+	body := utf16ptr(text)
+	caption := utf16ptr("Mira 移动端连接")
+	procMessageBox.Call(0, uintptr(unsafe.Pointer(body)), uintptr(unsafe.Pointer(caption)), 0x00000040)
 }
 
 func utf16ptr(s string) *uint16 {
